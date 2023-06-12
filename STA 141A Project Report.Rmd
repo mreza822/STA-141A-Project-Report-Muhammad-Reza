@@ -1,0 +1,832 @@
+---
+title: "STA 141A Project Report"
+author: "Muhammad Reza"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+# r setup code + imported libraries
+knitr::opts_chunk$set(eval = TRUE, echo = TRUE, fig.align = "center")
+library(knitr)
+library(tidyverse)
+library(caTools)
+library(MASS)
+library(glmnet)
+library(class)
+```
+
+```{r, echo = FALSE}
+
+# accessing the files for each session and saving them to session[[i]]
+session = list()
+for (i in 1:18) {
+  session[[i]] = readRDS(paste('./Data/session', i, '.rds', sep = ''))
+}
+```
+
+## I. Abstract
+
+I enrolled in STA 141A during this spring quarter of 2023 primarily because the STA 141 series is one of the requirements for my Statistics major here at UC Davis. However, I was still very interested in taking the course because I wanted to learn new skills and techniques in data science, and hone any techniques that I have already learned. I plan to pursue a career in this field in the future, so learning about the fundamentals of data science is very important. All of the material I have learned correlates with the requirements of this course project. In this project, we are analyzing data containing information on the neural activity of mice and constructing a prediction model based on any patterns we can find. More details on the data and our objective will be provided in the subsequent sections of this report. I am hoping that I can display the knowledge that I have acquired throughout the quarter and provide a deep and thoughtful analysis on the data set provided for this project, as well as any findings I have.
+
+*Note: For appearance and readability, all of the code used in this project will be included at the very end of the report in the Code Appendix.
+<br>
+<br>
+
+## II. Introduction
+
+The data set we are analyzing in this project is a sub set of data collected by Steinmetz et al. (2019) during an experiment conducted on mice. The experiments consisted of multiple sessions, and each session consisted of many trials. In each trial, mice were exposed to visual stimuli whose contrast levels took on a value in the set {0, 0.25, 0.5, 1}. A value of 1 indicates a strong contrast, while 0 indicates no contrast. Based on the visual stimuli, the mice make a decision by turning a little wheel in a specific direction. Details about how the decisions of the mice were evaluated are given as such:  
+
+- When left contrast > right contrast, success if the wheel was turned to the right and failure otherwise.  
+- When right contrast > left contrast, success if the wheel was turned to the left and failure otherwise.  
+- When both left and right contrasts are zero, success if the wheel is held still and failure otherwise. 
+- When left and right contrasts are equal but non-zero, left or right will be randomly chosen as the correct choice. 50% chance of each.  
+<br>
+
+To gain an understanding of how the visual stimuli affected the decision making of the mice, the experimenters recorded the activity of neurons in the mice's visual cortex, in the form of spike trains. All of the variables for each trial are given below:  
+
+- `feedback_type`: type of the feedback, 1 for success and -1 for failure
+- `contrast_left`: contrast of the left stimulus
+- `contrast_right`: contrast of the right stimulus
+- `time`: centers of the time bins for `spks`  
+- `spks`: numbers of spikes of neurons in the visual cortex in time bins defined in `time`
+- `brain_area`: area of the brain where each neuron lives  
+<br>
+
+*Note: The original data set containted the data collected from 39 sessions across 10 mice. Our subset that we are analyzing only contains data from the first 18 sessions across 4 mice.
+<br>
+
+The goal of this project is to analyze this data set by observing the variables and finding patterns, and utilizing our findings in order to build a model to predict `feedback_type` using the spike trains (aka `spks`) as well as the visual stimuli (aka `contrast_left` and `contrast_right`). 
+
+Based on the question of interest, we can brainstorm possible hypotheses. For example, we can hypothesize that `feedback_type` is more likely to be 1 (1 indicates success) if `contrast_left` is higher than `contrast_right`. Or, we can hypothesize that `feedback_type` is more likely to be 1 if the spike count across the neurons is higher. Does the brain areas where the neurons are matter as well? These questions, hypotheses, and more will be kept in mind throughout this project. 
+<br>
+<br>
+
+# III. Background
+
+Decision-making is a complicated process. Not only does it involve the actions themselves, but it also includes the evaluation of potential rewards that may come from performing said actions. Evaluating neural activity across different brain areas during the decision-making process is not a task to be taken lightly. For more information about this, I encourage all readers to visit an article published on the United States National Library of Medicine. The article details an experiment dedicated to evaluating which brain areas are activated during reward-based decision making. The link to the article is below. 
+
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4145940
+
+However, that article and experiment corresponds to the human brain. What about the mouse brain? How does the mouse brain evaluate decisions? How does the role of certain visual stimuli affect the way the brain processes rewards? Perhaps if one of the visual stimuli is significantly stronger than the other, then the brain will have an easier time choosing the task that optimizes the reward. In the previous section, details about the variables and the concept of success and failure (with relevance to this specific experiment) are given. There are some additional things we should note however.
+
+- The brain areas for which the spike counts are recorded are different for each session. 
+- However, all of the mice in the experiment are of the same type, which means we can assume homogeneity in terms of how their brains function. This will be a key assumption for this project.
+
+I strongly recommend everyone to read the original publication of this experiment, as it goes heavily into detail about the ideologies and methodologies of the experiment. The link to that is directly below.
+
+https://www.nature.com/articles/s41586-019-1787-x
+<br>
+<br>
+
+## IV. Exploratory Data Analysis
+
+The first part of our project is to gain a better understanding of our data by exploring the features and variables of our data set. This is what is known as "exploratory data analysis", and it is exactly what it sounds like: exploring our data set, throughout all the sessions and trials.  
+
+*Note: The next lines are dedicated to making the necessary preparations for developing a tibble that displays information about our experiment across the sessions. Readers can skip directly to the tibble below if they would like, but it is recommended to read the next lines to gain a thorough understanding of the specific information the tibble is displaying. 
+<br>
+
+Firstly, we would like to observe how many neurons there is data recorded for among each session. Understanding the shape of our data is critical for understanding our data. We can find the number of neurons in each session by taking the length of `brain_area` in each of the 18 sessions, as that variable contains the location of the brain for each neuron recorded. 
+```{r, echo = FALSE}
+
+# finding number of neurons in each session and storing them into vector
+numNeurons = c()
+for (i in 1:18) {
+  numNeurons = c(numNeurons, length(session[[i]]$brain_area))
+}
+numNeurons
+```
+
+As can be observed, the number of neurons in each session varies heavily. Some statistics are displayed below to give an idea of how sparse this list is.
+```{r, echo = FALSE}
+
+# statistics of numNeurons
+cat("Maximum number of neurons among the sessions: ", max(numNeurons))
+cat("Minimum number of neurons among the sessions: ", min(numNeurons))
+cat("Average number of neurons among the sessions: ", mean(numNeurons))
+```
+
+As we advance in this report, the widespread number of neurons in each session is something worth keeping in mind.
+<br>
+
+However, is there another way we can observe brain activity outside of the number of neurons? The answer is yes! Something else we can do for each session is observe the number of different brain areas for all of the neurons in each session. We can do this by implementing the length() and unique() functions. The code required will be in the Code Appendix. 
+```{r, echo = FALSE}
+
+# finding number of brain areas in each session and storing them into vector
+numBrainAreas = c()
+for (i in 1:18) {
+  numBrainAreas = c(numBrainAreas, length(unique(session[[i]]$brain_area)))
+}
+numBrainAreas
+```
+
+The number of brain areas also varies across the sessions. As we continue exploring our data set, we can potentially determine the level of importance that this has.
+<br>
+
+Next, we want to observe how many trials were conducted in each session. The method for finding this is the same as finding the number of neurons per session. We can take the length of `feedback_type` in each of the 18 sessions, since there one entry for `feedback_type` for each trial.
+```{r, echo = FALSE}
+
+# finding number of trials in each session and storing them into vector
+numTrials = c()
+for (i in 1:18) {
+  numTrials = c(numTrials, length(session[[i]]$feedback_type))
+}
+numTrials
+```
+
+This is similar to what we observed with the number of neurons, where the number of trials also varies. Consider the following statistics.
+```{r}
+
+# statistics of numTrials
+cat("Maximum number of trials among the sessions: ", max(numTrials))
+cat("Minimum number of trials among the sessions: ", min(numTrials) + 100)
+cat("Average number of trials among the sessions: ", mean(numTrials))
+```
+
+As such, we should be remember the sparsity in the number of trials across each session. (The minimum number of trials is 214 because 100 trials were randomly removed from session 1, which has 114 trials in the list.)
+<br>
+
+Recall the introduction section of this report, where I mentioned that these 18 sessions involved four different mice. We can extract the mice names from each session to see which mouse was experimented on in each session.
+```{r, echo = FALSE}
+
+# finding mouse name for each session
+for (i in 1:18){
+  print(session[[i]]$mouse_name)
+}
+```
+
+- Sessions 1-3 were experiments involving Cori.
+- Sessions 4-7 were experiments involving Forssmann.
+- Sessions 8-11 were experiments involving Hench.
+- Sessions 12-18 were experiments involving Lederberg.
+
+By referring to the vectors we created above containing the number of neurons and the number of trials, we can see that both variables vary, even within sessions involving the same mouse. However, it is still important to consider which session belongs to which mouse, as we want to explore any similarities and differences between both sessions and mice. 
+<br>
+
+Also, recall that there is a concept of success and failure in this experiment, depending on the direction the mouse rolls the wheel after being exposed to the visual stimuli. But how successful were the mice? Were some mice more successful than others? To answer these questions, we can add 1 to the `feedback_type` among all trials in each session, take the average of all of those feedback types, and divide that value by 2. This extra manipulation is necessary due to failure being represented by -1 instead of 0 in our data set. 
+```{r, echo = FALSE}
+
+# finding success rate in each session
+success_rate = c()
+for (i in 1:18){
+  success_rate = c(success_rate, round((mean(session[[i]]$feedback_type + 1)/2), 2))
+}
+success_rate
+```
+
+- Overall, one can say that these experiments were quite accurate, as none of the sessions had below 60 percent accuracy.
+- As we go through the sessions, we can observe the success rate increasing. Cori had the lowest success rate. Forssmann and Hench had roughly the same success rate, which was higher than Cori. And lastly, Lederberg had the highest success rate by far out of the four mice. 
+- These results are important as we are aiming to predict `feedback_type`.
+<br>
+
+We would also like to explore the visual stimuli during each session. Instead of observing `contrast_left` and `contrast_right` separately, we can do something different. For now, we find the value of the left contrast minus the right contrast for each trial in each session. We can then take the average across all trials for each session. If this value is less than 0, then that means there was more left contrast in that session. If the value is greater than 0, then there was more right contrast in the session. And if the value is exactly 0, the left and right contrast were the same in the session.
+```{r, echo = FALSE}
+
+# finding average contrast in each session
+averageContrast = c()
+for (i in 1:18) {
+  averageContrast = c(averageContrast, mean(session[[i]]$contrast_left - session[[i]]$contrast_right))
+}
+averageContrast
+```
+<br>
+
+To organize all of our findings so far, we can create and display a tibble. The code required for creating the tibble can be found at the bottom of the report in the Code Appendix. 
+```{r, echo = FALSE}
+
+# creating and displaying tibble containing all of our findings so far
+n = length(session)
+
+table = tibble(Name = rep('name', n), Date = rep('dt', n), NumberOfBrainAreas = rep(0, n), NumberOfNeurons = rep(0, n), 
+               NumberOfTrials = rep(0, n), AverageContrast = rep(0, n), SuccessRate = rep(0, n))
+
+
+for(i in 1:n) {
+  table[i, 1] = session[[i]]$mouse_name
+  table[i, 2] = session[[i]]$date_exp
+  table[i, 3] = numBrainAreas[i]
+  table[i, 4] = numNeurons[i]
+  table[i, 5] = numTrials[i]
+  table[i, 6] = averageContrast[i]
+  table[i, 7] = success_rate[i]
+}
+kable(table, format = "html", table.attr = "class = 'table table-striped'", digits = 2) 
+```
+
+- As we examine this tibble, we find it hard to conclude whether how the average contrast impacts success rate. 
+- However, with such a big data set, drawing relationships and patterns while exploring all 18 sessions at once is extremely difficult. 
+<br>
+
+- Next we want to explore this data on the session level. In particular, we want to choose one session and explore the neural activities during the trials in that session. As such, we should pick the session that interests us the most.
+- Take a look at the 17th row in our tibble, which represents session 17. We can see that there are only 565 neurons of interest in that session, and they only occur in six different brain areas. However, the success rate in this session is the highest of all the sessions at 0.83. This is a very interesting session, one that is worth exploring. 
+- Before we begin and sort of data analysis and/or visualization, it is important to define what we mean by "neural activities". As we can see in the tibble, the number of neurons and the number of active brain areas varies heavily. Although we are currently working with only one session, we want to define neural activities in a way that provides consistency with respect to all sessions. 
+- However, while the amount of brain areas may vary, they are still the same from mouse to mouse. Also, recall that each trial in each session includes the variable `spks`, which records the number of neural spikes in the time bins defined by the variable `time`. The number of neural spikes is recorded for each neuron, so `spks` is a matrix.
+- As such, we can define "neural activities" to be the average number of spikes across all neurons in each brain area. This coincides with the aforementioned notion of consistency because these mice are all of the same species, meaning that we would expect the neurons in their brain to function in the same manner. Taking the average number of spikes across neurons should account for the variation in the number of neurons. Also, in each and every trial across all 18 sessions, the time bins all have a range of right around 0.4 seconds. This further reinforces the concept of homogeneity across all the mice. 
+<br>
+
+We can create a function for computing the average number of spikes per brain area in a trial. The function can be found in the Code Appendix. Consider the function applied to trial 1 of the 16th session.
+```{r, echo = FALSE}
+
+# function for computing and displaying average number of spikes across neurons per brain area in one trial
+average_spike_area = function(trial, session) {
+  spk.count = apply(session$spks[[trial]], 1, sum)
+  return(tapply(spk.count, session$brain_area, mean))
+}
+
+# implementing the function for trial 1, session 16
+average_spike_area(1, session[[16]])
+```
+
+In order to evaluate the entire session, we can find the average number of spikes per brain area for all the trials in session 16 and store them into a tibble. This tibble will also include `feedback_type`, `contrast_left`, and `contrast_right` for all of the trials. We will not take the average contrast because we have seen that analyzing the left and right contrast separately seems more relevant for our purpose. This tibble will not be displayed due to the size being too large. However, we can convert the tibble into a data frame in order to visualize our data. Our data frame will contain the average number of spikes per area, The code to carry this out can be found in the Code Appendix. 
+```{r, echo = FALSE}
+
+# number of trials and number of brain areas in session 16, as extracted from the previous tibble
+n_trials = length(session[[16]]$feedback_type)
+n_areas = length(unique(session[[16]]$brain_area))
+
+session16.trial.summary = matrix(nrow = n_trials, ncol = n_areas + 4)
+for(i in 1:n_trials) {
+  session16.trial.summary[i, ] = c(average_spike_area(i, session[[16]]),
+                         session[[16]]$feedback_type[i],
+                         session[[16]]$contrast_left[i],
+                         session[[16]]$contrast_right[i],
+                         i)
+}
+
+colnames(session16.trial.summary) = c(names(average_spike_area(1, session[[16]])), 'feedback', 'leftContrast','rightContrast', 'trialNum')
+
+# converting the tibble into a data frame
+session16.trial.summary = as_tibble(session16.trial.summary)
+```
+
+We can create another function based on our new data frame that can visualize the average spikes per area across trials. Again, the code required for this can be found in the Code Appendix.
+```{r, echo = FALSE}
+
+# function for plotting spikes per area
+plot.spikesPerArea = function(data, title, numTrials, numAreas) {
+
+  # creating a blank pot, think of this as "initializing" our plot
+  area.col = rainbow(n = numAreas, alpha = 0.7)
+  plot(x = 1, y = 0, col='white',xlim = c(0, numTrials), ylim = c(0.5, 2.2), xlab =  "Trials", ylab = "Average spike counts", main = title)
+
+  # visualizing our data on the initialized plot
+  for(i in 1:n_areas) {
+    lines(y = data[[i]], x = data$trialNum, col = area.col[i], lty = 2, lwd = 1)
+    lines(smooth.spline(data$trialNum, data[[i]]),col = area.col[i], lwd = 3)
+  }
+  legend("topright",
+    legend = colnames(data)[1:numAreas],
+    col = area.col,
+    lty = 1,
+    cex = 0.8
+  )
+}
+plot.spikesPerArea(session16.trial.summary, "Spikes per Area in Session 16", n_trials, n_areas)
+```
+
+- This plot is hard to interpret at first glance. The solid-colored lines are approximations of the average spikes per area across the trials, which is what the dashed lines represent. 
+- This plot shows us that that brain area "LGd" had the most spikes throughout the trials, which areas like "SSp" and "SSs" had the least spikes. Other areas like "CA3", "MB", and "TH" were in the middle. 
+<br>
+
+However, is there more we can find out from visualization with relevance to the feedback type and visual stimuli? To answer this question, we can divide our data frame into six subsets, based on left contrast being greater, equal to, or less than right contrast, and whether the feedback type is 1 or -1. We can visualize these subsets using our function and see if the lines follow different patterns. 
+```{r, fig.height = 14, fig.width = 11, echo = FALSE}
+
+# displaying multiple plots next to each other
+par(mfrow = c(3, 2))
+
+# creating sub1 and applying plot.SpikesPerArea function
+sub1 = session16.trial.summary %>% filter((feedback == 1), (leftContrast > rightContrast))
+plot.spikesPerArea(sub1, "Spikes per Area in Session 16 (Feedback = 1, LC > RC)", n_trials, n_areas)
+
+# creating sub2 and applying plot.SpikesPerArea function
+sub2 = session16.trial.summary %>% filter((feedback == 1), (leftContrast == rightContrast))
+plot.spikesPerArea(sub2, "Spikes per Area in Session 16 (Feedback = 1, LC = RC)", n_trials, n_areas)
+
+# creating sub3 and applying plot.SpikesPerArea function
+sub3 = session16.trial.summary %>% filter((feedback == 1), (leftContrast < rightContrast))
+plot.spikesPerArea(sub3, "Spikes per Area in Session 16 (Feedback = 1, LC < RC)", n_trials, n_areas)
+
+# creating sub4 and applying plot.SpikesPerArea function
+sub4 = session16.trial.summary %>% filter((feedback == -1), (leftContrast > rightContrast))
+plot.spikesPerArea(sub4, "Spikes per Area in Session 16 (Feedback = -1, LC > RC)", n_trials, n_areas)
+
+# creating sub5 and applying plot.SpikesPerArea function
+sub5 = session16.trial.summary %>% filter((feedback == -1), (leftContrast == rightContrast))
+plot.spikesPerArea(sub5, "Spikes per Area in Session 16 (Feedback = -1, LC = RC)", n_trials, n_areas)
+
+# creating sub6 and applying plot.SpikesPerArea function
+sub6 = session16.trial.summary %>% filter((feedback == -1), (leftContrast < rightContrast))
+plot.spikesPerArea(sub6, "Spikes per Area in Session 16 (Feedback = -1, LC < RC)", n_trials, n_areas)
+```
+
+- It's hard to draw conclusions from these plots, since they seem to follow the same patterns as one another. "LGd" is at the top for all the plots. "CA3", "MB" and "TH" are around the middle. "SSp" and "SSs" are around the bottom. 
+- Apart from sparsity due to the decrease size of the subsets compared to the actual data frame, these plots follow the same patterns as the first plot, which was based on the entire data frame. 
+- The difficulty of drawing conclusions could also be at the cause of the trial numbers being spread out in these subsets, since the subsets were created based on other factors outside of the trial number. 
+<br>
+
+As such, we can try to explore our data on the trial level. Instead of averaging the neuron activity, we can analyze the neurons themselves across the time bins, and see if we find anything interesting. We can create a function to plot the neurons and apply it to the first four trials for observation. 
+```{r, echo = FALSE}
+
+# function for plotting neurons on time bins 
+plot.trial = function(i.t, area, area.col, this_session) {
+    
+    spks = this_session$spks[[i.t]];
+    n.neuron = dim(spks)[1]
+    time.points = this_session$time[[i.t]]
+    
+    plot(0, 0, xlim = c(min(time.points), max(time.points)), ylim = c(0, n.neuron + 1),col = 'white', xlab = 'Time (s)', yaxt = 'n', ylab = 'Neuron',
+         main = paste('Trial ', i.t, ', feedback', this_session$feedback_type[i.t], ', LC', this_session$contrast_left[i.t], ', RC', 
+                      this_session$contrast_right[i.t]), cex.lab = 1.5)
+    
+    for(i in 1:n.neuron) {
+        i.a = which(area == this_session$brain_area[i])
+        col.this = area.col[i.a]
+        
+        ids.spike = which(spks[i,] > 0)  
+        if(length(ids.spike) > 0){
+            points(x = time.points[ids.spike], y = rep(i, length(ids.spike)), pch = '.', cex = 2, col = col.this)
+        }
+    }
+    
+legend("topright", 
+  legend = area, 
+  col = area.col, 
+  pch = 16, 
+  cex = 0.8
+  )
+
+}
+```
+
+```{r, fig.height = 8, fig.width = 7, echo = FALSE}
+
+# applying plot.trial function to first four trials in session 16
+area.col = rainbow(n = n_areas, alpha = 0.7)
+names = names(session16.trial.summary)
+
+par(mfrow = c(2,2))
+
+plot.trial(1, names[1:(length(names) - 4)], area.col, session[[16]])
+plot.trial(2, names[1:(length(names) - 4)], area.col, session[[16]])
+plot.trial(3, names[1:(length(names) - 4)], area.col, session[[16]])
+plot.trial(4, names[1:(length(names) - 4)], area.col, session[[16]])
+```
+
+- These plots are mostly similar to the plots that we created when evaluating the data on the session level.
+- This is to expected, however, since those plots were based on all the trials from the session. These plots model the trials themselves. 
+<br>
+
+Throughout the trials of this session, it seems as though the neural activity is consistent. This aligns with our assumptions of homogeneity among the mice in terms of brain functionality. As such, while the sessions themselves might be different, exploring the data on all three levels (data, session, and trial) has helped us in deciding the next steps to take in order to build our predicitve model.
+<br>
+<br>
+
+## V. Data Integration
+
+The next part of this project is dedicated to utilizing our findings and what we learned from the previous section. With that in consideration, we will propose a way to combine the data across sessions. We will then build our predictive model based on this combined data.
+<br>
+
+- Recall the previous sections, where we went over the assumptions of homogeneity across the mice. We assumed this because of a few reasons. The first reason is that all of the mice in this experiment are of the same type. The second reason we assumed this was because the neural activity was consistent among all brain areas in a session, which we determined through visualizing the data in the sixteenth session in the previous section of this project. 
+- With this assumption of homogeneity in mind, there are two approaches we can take to combining the data. One of the approaches is much more complex than the other, so we will start with that approach first.
+<br>
+
+Our first approach for combining the data involves considering all of the unique brain areas throughout all of the sessions. Since we are assuming homogeneity between the mice, we can build a data frame containing columns corresponding to all of the brain areas in this experiment. Each row of the data frame will correspond to each trial. The entry for a specific brain area column for a specific row will be the average number of spikes in that area during that trial. For reference, here are all of the unique brain area names we will be using in our data frame.
+```{r, echo = FALSE}
+
+# find all distinct brain areas through all 18 sessions
+area_names = c()
+
+for(i in 1:length(session)) {
+  
+  for (j in 1:length(unique(session[[i]]$brain_area))) {
+    
+    if (!(unique(session[[i]]$brain_area)[j] %in% area_names)) {
+      area_names = c(area_names, unique(session[[i]]$brain_area)[j])
+    }
+  }
+}
+area_names
+```
+
+Our data frame will also include the session number, the trial number, the left and right contrasts, and the feedback type. This data frame will contain over 60 columns, so it is a little too big to display. However, we can display the only first 15 columns along with the first five rows of the data frame. The first five rows correspond to the first five trials of the first session. The code for creating the data frame can be found in the Code Appendix below.  
+```{r, echo = FALSE}
+
+# compute total number of trials across all sessions for table 
+totalTrials = 0
+for(i in 1:length(session)) {
+  totalTrials = totalTrials + length(session[[i]]$feedback_type)
+}
+
+# build new tibble 
+bigTable = tibble(SessionNumber = rep(0, totalTrials), TrialNumber = rep(0, totalTrials), LeftContrast = rep(0, totalTrials), 
+                  RightContrast = rep(0, totalTrials), FeedbackType = rep(0, totalTrials),
+                  ACA = rep(0, totalTrials), MOs = rep(0, totalTrials), LS = rep(0, totalTrials), 
+                  root = rep(0, totalTrials), VISp = rep(0, totalTrials), CA3 = rep(0, totalTrials), 
+                  SUB = rep(0, totalTrials), DG = rep(0, totalTrials), CA1 = rep(0, totalTrials), 
+                  VISl = rep(0, totalTrials), VISpm = rep(0, totalTrials), POST = rep(0, totalTrials), 
+                  VISam = rep(0, totalTrials), MG = rep(0, totalTrials), SPF = rep(0, totalTrials), 
+                  LP = rep(0, totalTrials), MRN = rep(0, totalTrials), NB = rep(0, totalTrials), 
+                  LGd = rep(0, totalTrials), TH = rep(0, totalTrials), VPL = rep(0, totalTrials), 
+                  VISa = rep(0, totalTrials), LSr = rep(0, totalTrials), OLF = rep(0, totalTrials), 
+                  ORB = rep(0, totalTrials), PL = rep(0, totalTrials), AUD = rep(0, totalTrials), 
+                  SSp = rep(0, totalTrials), LD = rep(0, totalTrials), CP = rep(0, totalTrials), 
+                  EPd = rep(0, totalTrials), PIR = rep(0, totalTrials), ILA = rep(0, totalTrials), 
+                  TT = rep(0, totalTrials), PO = rep(0, totalTrials), ORBm = rep(0, totalTrials), 
+                  MB = rep(0, totalTrials), SCm = rep(0, totalTrials), SCsg = rep(0, totalTrials), 
+                  POL = rep(0, totalTrials), GPe = rep(0, totalTrials), VISrl = rep(0, totalTrials), 
+                  MOp = rep(0, totalTrials), LSc = rep(0, totalTrials), PT = rep(0, totalTrials), 
+                  MD = rep(0, totalTrials), LH = rep(0, totalTrials), ZI = rep(0, totalTrials), 
+                  SCs = rep(0, totalTrials), RN = rep(0, totalTrials), MS = rep(0, totalTrials), 
+                  RSP = rep(0, totalTrials), PAG = rep(0, totalTrials), BLA = rep(0, totalTrials), 
+                  VPM = rep(0, totalTrials), SSs = rep(0, totalTrials), RT = rep(0, totalTrials), 
+                  MEA = rep(0, totalTrials), ACB = rep(0, totalTrials), OT = rep(0, totalTrials), 
+                  SI = rep(0, totalTrials), SNr = rep(0, totalTrials))
+
+# converting tibble to dataframe
+bigTable = data.frame(bigTable)
+
+# initializing all values in brain area columns of bigTable to NA
+bigTable[, 6:ncol(bigTable)] = replace(bigTable[, 6:ncol(bigTable)], bigTable[, 6:ncol(bigTable)] == 0, NA)
+```
+
+```{r, echo = FALSE}
+
+# code for populating first five columns of big table
+rowCounter = 1
+
+for (i in 1:length(session)) {
+  
+  for (j in 1:length(session[[i]]$feedback_type)) {
+    
+    bigTable[rowCounter, 1] = i
+    bigTable[rowCounter, 2] = j
+    bigTable[rowCounter, 3] = session[[i]]$contrast_left[j]
+    bigTable[rowCounter, 4] = session[[i]]$contrast_right[j]
+    bigTable[rowCounter, 5] = session[[i]]$feedback_type[j]
+    
+    rowCounter = rowCounter + 1
+  }
+}
+```
+
+
+```{r, echo = FALSE}
+
+# code for populating brain area columns of big table
+rowCounter = 1
+
+for (i in 1:length(session)) {
+  
+  for (j in 1:length(session[[i]]$feedback_type)) {
+    
+    avgSpikes = average_spike_area(j, session[[i]])
+    n = length(avgSpikes)
+    avgSpikes = data.frame(avgSpikes)
+    
+    for (k in 1:nrow(avgSpikes)) {
+      
+      colNum = which(colnames(bigTable) == row.names(avgSpikes)[k])
+      bigTable[rowCounter, colNum] = avgSpikes[k, 1]
+    }
+    rowCounter = rowCounter + 1
+  }
+}
+```
+
+```{r, echo = FALSE}
+
+# displaying first 15 columns and first five rows of the bigTable
+bigTable[, 1:15] %>% head(5)
+```
+
+- Take a look at the last two columns above, which correspond to the brain areas "CA1" and "VISl". Notice that these values are listed as "NA" for the first five rows. This is because there is no data for those brain areas in the first session. As mentioned before, the brain areas that each session records spike counts for are not necessarily the same.
+- With the assumption of homogeneity in brain functionality, we can also assume that the brain areas that are not recorded in the session function the same as they do in other sessions. This assumption is the essence of this approach.
+- In order to replace the "NA" values, we can replace them with the average spike count for all entries in that column that there is applicable information for. This is a common data preprocessing practice, and is useful in this case, since taking the average will preserve the consistency of the entries that have data. 
+- Here are the same sets of rows and columns displayed again after ridding the data frame of "NA" values. 
+```{r, echo = FALSE}
+
+# replacing NA values with average value in that column
+for (i in 6:ncol(bigTable)) {
+  bigTable[, i] = ifelse(is.na(bigTable[, i]), ave(bigTable[, i], FUN = function(x) mean(x, na.rm = TRUE)), bigTable[, i])
+}
+```
+
+```{r, echo = FALSE}
+
+# displaying first 15 columns and first five rows of bigTable without NA values
+bigTable[, 1:15] %>% head(5)
+```
+
+As can be observed, the last two columns no longer contain "NA" values. They all instead contain the same number, which is the average of the entries in that column that were not "NA" to begin with.
+<br>
+
+Now that our data frame contains only applicable values, the next step of this approach is to cluster our data based on the spike count data in each brain area. We will apply k-means clustering with a total of 18 clusters, due to there being 18 sessions in this experiment. Then, we will update the data frame by adding another column that contains the cluster to which each entry belongs. The code to do this can be located in the code appendix below. 
+```{r, echo = FALSE}
+
+# applying k-means clustering with 10 clusters
+k18.cluster = bigTable[, 6:ncol(bigTable)] %>% kmeans(18)
+
+# making a new column corresponding to the cluster number in our data frame
+for (i in 1:nrow(bigTable)) {
+  bigTable[i, 68] = k18.cluster$cluster[i]
+}
+colnames(bigTable)[68] = "Cluster"
+```
+
+As such, we will eventually make a prediction model based on this data frame, containing the clusters.
+<br>
+
+The second (and easier) approach for combining the data is to not include the specific brain areas at all. This approach also coincides with our assumptions of homogeneity. In the previous approach we replaced missing values with the average. In this approach, we will assume that the brain areas operate the same across the sessions and only analyze the average number of spikes for each trial without respect to brain area. 
+<br>
+
+As such, we can construct a new data frame. This data frame is similar to the data frame constructed in the previous approach. The only difference is that the average spikes in all brain areas is displayed under just one column, instead of the average spike count per brain area. Consider the first five entries of the data frame, as given below.
+```{r, echo = FALSE}
+
+# build new table
+smallTable = tibble(SessionNumber = rep(0, totalTrials), TrialNumber = rep(0, totalTrials), 
+                    LeftContrast = rep(0, totalTrials), RightContrast = rep(0, totalTrials), 
+                    BrainArea = rep(0, totalTrials), FeedbackType = rep(0, totalTrials))
+
+# convert tibble to data frame
+smallTable = data.frame(smallTable)
+
+rowCounter = 1
+
+# populate tibble
+for (i in 1:length(session)) {
+  
+  for (j in 1:length(session[[i]]$feedback_type)) {
+    
+    smallTable[rowCounter, 1] = i
+    smallTable[rowCounter, 2] = j
+    smallTable[rowCounter, 3] = session[[i]]$contrast_left[j]
+    smallTable[rowCounter, 4] = session[[i]]$contrast_right[j]
+    smallTable[rowCounter, 6] = session[[i]]$feedback_type[j]
+    
+    spks.trial = session[[i]]$spks[[j]]
+    total.spikes = apply(spks.trial, 1, sum)
+    avg.spikes = mean(total.spikes)
+    
+    smallTable[rowCounter, 5] = avg.spikes
+    
+    rowCounter = rowCounter + 1
+  }
+}
+smallTable %>% head(5)
+```
+
+- As we can observe, this data frame is much simpler than the previous data frame. 
+- Since we only have one column representing spike counts in the brain, there is no logical need to cluster our data, either.
+- However, can we say that the prediction model based on this data frame will be more accurate? This is a question we can explore in the next section of this project!
+<br>
+<br>
+
+## VI. Predictive Modeling
+
+- Now, we are going to build prediction models based on the combined data in the previous section.
+- Recall that we combined the data in two different approaches. As such, we will build prediction models based on both approaches. 
+- These prediction models will be evaluated on test data to be released on 11:59 PM of June 11th. This test data will contain 100 trials from session 1 and 100 trials from session 18.
+<br>
+
+Before the official test data is released, we can create some prediction models based on the data frames we already have. We will first build a model based on the first and more complex data frame. In order to do this, we can perform an 80:20 split on our data, where 80 percent of the data frame will be our training data, and 20 percent of the data frame will be our test data. The code for doing this is in the Code Appendix below. 
+```{r, echo = FALSE}
+
+# doing an 80:20 split on bigTable
+set.seed(123)
+big_split = sample.split(bigTable$FeedbackType, SplitRatio = 0.8)
+big_training_set = subset(bigTable, big_split == TRUE)
+big_test_set = subset(bigTable, big_split == FALSE)
+```
+
+After splitting our data into training and test sets, we can create our prediction model. Our prediction model will be based on the left contrast, the right contrast, and the cluster that each entry belongs to, since the cluster is what we are using to represent the neural activity in the various brain areas. 
+<br>
+
+The model we will use is the k-nearest-neighbors model with parameter k = 10. After building the prediction model, we can construct the confusion matrix, as displayed below. 
+```{r, echo = FALSE, cache = TRUE}
+
+# knn prediction model with k=10
+big.knn.pred = knn(train = big_training_set[, c("LeftContrast", "RightContrast", "Cluster"), drop = FALSE], 
+                test = big_test_set[, c("LeftContrast", "RightContrast", "Cluster"), drop = FALSE], 
+                cl = big_training_set$FeedbackType, k = 10)
+
+big.knn.confusion.matrix = table(big.knn.pred, big_test_set$FeedbackType)
+big.knn.confusion.matrix
+```
+
+- This confusion matrix tells us the predicted values vs the actual values. 
+- We can calculate the misclassification rate of our model from this confusion matrix. That value is displayed below. 
+```{r, echo = FALSE}
+
+# misclassification rate for big.knn.pred
+error.rate =  1 - (sum(diag(big.knn.confusion.matrix)) / sum(big.knn.confusion.matrix))
+error.rate
+```
+
+We can also calculate the precision from this confusion matrix. Precision is the number of true positives divided by the sum of true positives and false positives. That value is displayed below.
+```{r, echo = FALSE}
+
+# precision for big.knn.pred
+precision = big.knn.confusion.matrix[2, 2] / (big.knn.confusion.matrix[2, 2] + big.knn.confusion.matrix[2, 1])
+precision
+```
+We can also calculate the recall of this confusion matrix. The recall is the number of true positives over the sum of all positive instances, whether they were predicted correctly or not. That value is displayed below.
+```{r, echo = FALSE}
+
+# recall for big.knn.pred
+recall = big.knn.confusion.matrix[2, 2] / (big.knn.confusion.matrix[2, 2] + big.knn.confusion.matrix[1, 2])
+recall
+```
+
+The precision is quite high, but the recall is very high!
+<br>
+
+Now, let us try and build the same kind of model, this time, based on the second and less complex data frame. This model will predict the feedback type based on the left contrast, the right contrast, and the average neural spike counts for that trial. We first need to apply an 80:20 split on our second data frame in order to obtain our training and test data. Then, we can build our knn prediction model, once again, with parameter k = 10. The confusion matrix for the model is displayed below. 
+```{r, echo = FALSE}
+
+# doing an 80:20 split on smallTable
+set.seed(123)
+small_split = sample.split(smallTable$FeedbackType, SplitRatio = 0.8)
+small_training_set = subset(smallTable, small_split == TRUE)
+small_test_set = subset(smallTable, small_split == FALSE)
+```
+
+```{r, echo = FALSE}
+
+# knn prediction model with k=10
+small.knn.pred = knn(train = small_training_set[, c("LeftContrast", "RightContrast", "BrainArea"), drop = FALSE], 
+                test = small_test_set[, c("LeftContrast", "RightContrast", "BrainArea"), drop = FALSE], 
+                cl = small_training_set$FeedbackType, k = 10)
+
+small.knn.confusion.matrix = table(small.knn.pred, small_test_set$FeedbackType)
+small.knn.confusion.matrix
+```
+
+The misclassification rate, the precision, and the recall for this model are all displayed below.
+```{r}
+
+# misclassification rate for small.knn.pred
+error.rate =  1 - (sum(diag(small.knn.confusion.matrix)) / sum(small.knn.confusion.matrix))
+error.rate
+```
+
+```{r, echo = FALSE}
+
+# precision for small.knn.pred
+precision = small.knn.confusion.matrix[2, 2] / (small.knn.confusion.matrix[2, 2] + small.knn.confusion.matrix[2, 1])
+precision
+```
+
+```{r, echo = FALSE}
+
+# recall for small.knn.pred
+recall = small.knn.confusion.matrix[2, 2] / (small.knn.confusion.matrix[2, 2] + small.knn.confusion.matrix[1, 2])
+recall
+```
+
+- As it turns out, the models from both of the data frames are nearly the same. In fact, the model from the second data frame has a marginally lower misclassification rate, meaning that it is slightly more accurate. The precision is also higher, but the recall is a bit lower. Regardless, the differences between the evaluation metrics are negligible. As it turns out, more complex does not always mean more accurate.
+- But will this model be this accurate for the actual test data? We will find that out soon!
+<br>
+<br>
+
+## VII. Predictive Performance on the Actual Test Sets
+
+The time is 12:25 AM. The date is June 12th.
+<br>
+
+The test sets for the project were released about half an hour ago. There are two RDS files, as extracted from the downloadable zip on Canvas. To begin, we will access the files and save them into objects in R.
+```{r, echo = FALSE}
+
+# accessing the files for each test session and saving them to test_session[[i]]
+test_session = list()
+for (i in 1:2) {
+  test_session[[i]] = readRDS(paste('./Test/test', i, '.rds', sep = ''))
+}
+```
+
+Now, we will extract the information from the test sessions and put them into a data frame, the same way we did with the original session data. This will be our test data. Our training data will be the entire original data frame, so there is no need to split it this time. We will be using the data frame from the second approach. Although that approach is simpler, the prediction model based on that data frame yielded nearly the exact same evaluation metrics. There is no need to pursue a more complex model that is of the same quality. Once again, all of the code is in the Code Appendix below. 
+```{r, echo = FALSE}
+
+# build new table for actual test data
+testTable = tibble(SessionNumber = rep(0, 200), TrialNumber = rep(0, 200), 
+                    LeftContrast = rep(0, 200), RightContrast = rep(0, 200), 
+                    BrainArea = rep(0, 200), FeedbackType = rep(0, 200))
+
+# convert tibble to data frame
+testTable = data.frame(testTable)
+
+rowCounter = 1
+
+# populate tibble
+for (i in 1:length(test_session)) {
+  
+  for (j in 1:length(test_session[[i]]$feedback_type)) {
+    
+    testTable[rowCounter, 1] = i
+    testTable[rowCounter, 2] = j
+    testTable[rowCounter, 3] = test_session[[i]]$contrast_left[j]
+    testTable[rowCounter, 4] = test_session[[i]]$contrast_right[j]
+    testTable[rowCounter, 6] = test_session[[i]]$feedback_type[j]
+    
+    spks.trial = test_session[[i]]$spks[[j]]
+    total.spikes = apply(spks.trial, 1, sum)
+    avg.spikes = mean(total.spikes)
+    
+    testTable[rowCounter, 5] = avg.spikes
+    
+    rowCounter = rowCounter + 1
+  }
+}
+```
+
+Now, we will build a prediction model to predict the actual test data. Just like above, we will build a knn model with parameter k = 10. The confusion matrix for the model is displayed below. 
+```{r, echo = FALSE}
+
+# knn prediction model with k=10
+actual.knn.pred = knn(train = smallTable[, c("LeftContrast", "RightContrast", "BrainArea"), drop = FALSE], 
+                test = testTable[, c("LeftContrast", "RightContrast", "BrainArea"), drop = FALSE], 
+                cl = smallTable$FeedbackType, k = 10)
+
+actual.knn.confusion.matrix = table(actual.knn.pred, testTable$FeedbackType)
+actual.knn.confusion.matrix
+```
+
+We can calculate the miclassification rate for this confusion matrix once again.
+```{r, echo = FALSE}
+
+# misclassifcation rate for actual test set
+error.rate =  1 - (sum(diag(actual.knn.confusion.matrix)) / sum(actual.knn.confusion.matrix))
+error.rate
+```
+
+The precision and recall scores of this confusion matrix are also displayed below. 
+```{r, echo = FALSE}
+
+# precision for actual.knn.pred
+precision = actual.knn.confusion.matrix[2, 2] / (actual.knn.confusion.matrix[2, 2] + actual.knn.confusion.matrix[2, 1])
+precision
+```
+
+```{r, echo = FALSE}
+
+# recall for actual.knn.pred
+recall = actual.knn.confusion.matrix[2, 2] / (actual.knn.confusion.matrix[2, 2] + actual.knn.confusion.matrix[1, 2])
+recall
+```
+
+The misclassification rate is actually lower than when we split the data set in the previous section. The precision and recall scores are also higher. This means the model works better on this test set that when we split the data before. This could be because our training data is larger than when we split the data. We can conclude that our process for combining data and building the prediction model was successful!
+<br>
+<br>
+
+## VIII. Conclusion and Discussion
+
+The decision-making process is a very interesting one. The way the brain processes what decisions we should make and what rewards they can lead to is very complex to understand. In this project, we attempted to gain an understanding of how the mouse brain handles the decision-making process when exposed to certain visual stimuli. Whether a trial was successful or not depended on whether the mouse acted in accordance with the visual stimuli. During the trials of the experiment, the neural activity of the mice was recorded to represent what occurs inside the brain during the decision-making process.
+<br>
+
+In the exploratory data analysis section, we explored our data on all three levels (data, session, and trial). Through creating tables and visualizing our data, we determined that it was safe to assume homogeneity between the mice, which means homogeneity in their brain functionality. In the data integration section, we combined the data across all of the sessions based on this assumption. We tried to combine the data in two different ways. In the predictive modeling section, we split our data on an 80:20 ratio and implemented a knn model with parameter k = 10 as our prediction model. We did this twice, one for each approach we used for combining our data. We found that the results of the prediction models for each approach were practically identical, so we decided to go with the model that came from the second approach to predict the actual test data, since this model was a lot less complex. Review section 5 for more details on the two approaches. 
+<br>
+
+For the actual test data, the model we had was quite accurate. Here are the evaluation metrics we calculated from the confusion matrix. 
+```{r, echo = FALSE}
+
+# displaying misclassification rate
+cat("Misclassification Rate: ", error.rate)
+```
+
+```{r, echo = FALSE}
+
+# displaying precision
+cat("Precision: ", precision)
+```
+
+```{r, echo = FALSE}
+
+# displaying recall
+cat("Recall: ", recall)
+```
+
+As such, we were able to develop a solid model for this project. We were able to utilize our assumption of homogeneity among the brain areas of all the mice and combine the data across the sessions, which gave us a good set of data for training the model. Some comments I would like to make, however, would be based around the discrepancy among the `feedback_type` values. There are much more values that are 1 as opposed to -1 in our data, among all the sessions. This discrepancy led to our prediction model predicting a `feedback_type` of 1 for the large majority of the time. I actually tested out an LDA model and a logistic regression model on the data. But those models predicted a value of 1 for the entire test set, so I omitted them from the report in favor of the knn model. That model did a better job at predicting the `feedback_type` with relevance to how we combined that data across all of the sessions. Judging from our evaluation metrics, I would assert that we did a good job at building our prediction model. 
+<br>
+<br>
+
+### Acknowledgement
+Lecture notes, discussion notes, StackOverflow, GeeksforGeeks, National Library of Medicine, Nature.com, Piazza, friends and family
+<br>
+<br>
+
+### Reference
+
+https://www.nature.com/articles/s41586-019-1787-x
+<br>
+<br>
+
+### Session Information
+
+```{r, echo = FALSE}
+
+# session information
+sessionInfo()
+```
+<br>
+<br>
+
+## Code Appendix
+```{r, ref.label = knitr::all_labels(), echo = TRUE, eval = FALSE}
+```
